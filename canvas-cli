@@ -8,7 +8,11 @@
 #   canvas-cli status  <id>
 #
 # Env:
-#   CANVAS_BASE   internal base URL the agent polls (default http://localhost:8000)
+#   CANVAS_BASE   base URL the agent polls.
+#                   on the VM:  http://localhost:8000  (default, no token)
+#                   off the VM: https://canvas.exe.xyz  (set CANVAS_TOKEN)
+#   CANVAS_TOKEN  exe.dev VM bearer token, for off-VM agents (laptop CLI/desktop)
+#                   ssh exe.dev ssh-key generate-api-key --vm=<vm> --label=canvas
 #   CANVAS_PUBLIC public URL shown to the human  (default https://canvas.exe.xyz)
 #   CANVAS_POLL   poll interval seconds (default 3)
 set -euo pipefail
@@ -20,14 +24,25 @@ POLL="${CANVAS_POLL:-3}"
 need() { command -v "$1" >/dev/null || { echo "need $1" >&2; exit 1; }; }
 need curl; need jq
 
+# cx: curl wrapper that injects the exe.dev VM bearer token when CANVAS_TOKEN is
+# set. Required when the agent runs OFF the VM and reaches the canvas through
+# https://canvas.exe.xyz; omitted (harmless) when hitting localhost on the VM.
+cx() {
+  if [ -n "${CANVAS_TOKEN:-}" ]; then
+    curl -fsS -H "X-Exedev-Authorization: Bearer ${CANVAS_TOKEN}" "$@"
+  else
+    curl -fsS "$@"
+  fi
+}
+
 create() {
   local prompt="$1"
-  curl -fsS -X POST "$BASE/api/canvas" \
+  cx -X POST "$BASE/api/canvas" \
     -H 'Content-Type: application/json' \
     -d "$(jq -nc --arg p "$prompt" --arg by "${CANVAS_BY:-agent}" '{prompt:$p, by:$by}')"
 }
 
-status() { curl -fsS "$BASE/api/canvas/$1"; }
+status() { cx "$BASE/api/canvas/$1"; }
 
 wait_done() {
   local id="$1" out="${2:-canvas-$1.png}"
@@ -36,8 +51,8 @@ wait_done() {
     local st
     st=$(status "$id" | jq -r .status)
     if [ "$st" = "done" ]; then
-      curl -fsS "$BASE/api/canvas/$id/image.png" -o "$out" || true
-      curl -fsS "$BASE/api/canvas/$id/snapshot.json" -o "${out%.png}.snapshot.json" 2>/dev/null || true
+      cx "$BASE/api/canvas/$id/image.png" -o "$out" || true
+      cx "$BASE/api/canvas/$id/snapshot.json" -o "${out%.png}.snapshot.json" 2>/dev/null || true
       echo "✅ received. image -> $out" >&2
       status "$id" | jq '{id,status,text,has_image,has_snapshot}'
       return 0
