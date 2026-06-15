@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,7 @@ type Session struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	CreatedBy string    `json:"created_by,omitempty"` // agent label
+	Owner     string    `json:"owner,omitempty"`      // exe.dev email that may access this session
 	// Result fields, populated on Send:
 	Text     string `json:"text,omitempty"`      // optional human note
 	HasImage bool   `json:"has_image"`           // PNG export present
@@ -79,7 +81,7 @@ func (s *Store) save(sess *Session) error {
 	return os.WriteFile(s.path(sess.ID, "meta.json"), b, 0o644)
 }
 
-func (s *Store) Create(prompt, by string) (*Session, error) {
+func (s *Store) Create(prompt, by, owner string) (*Session, error) {
 	now := time.Now().UTC()
 	sess := &Session{
 		ID:        "sess_" + randID(),
@@ -88,6 +90,7 @@ func (s *Store) Create(prompt, by string) (*Session, error) {
 		CreatedAt: now,
 		UpdatedAt: now,
 		CreatedBy: by,
+		Owner:     owner,
 	}
 	s.mu.Lock()
 	s.m[sess.ID] = sess
@@ -157,6 +160,18 @@ func userEmail(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get("X-ExeDev-Email"))
 }
 
+// canAccess reports whether the requester may view/submit a session.
+// A session with an Owner is private to that exe.dev email (the proxy sets
+// X-ExeDev-Email for both the human's cookie session and the agent's bearer
+// token, so they resolve to the same identity). Sessions without an Owner
+// (e.g. created on a tokenless localhost dev box) are unrestricted.
+func canAccess(sess *Session, r *http.Request) bool {
+	if sess.Owner == "" {
+		return true
+	}
+	return strings.EqualFold(sess.Owner, userEmail(r))
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -173,7 +188,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Prompt) == "" {
 		req.Prompt = "Draw something for the agent."
 	}
-	sess, err := s.store.Create(req.Prompt, req.By)
+	sess, err := s.store.Create(req.Prompt, req.By, userEmail(r))
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -192,12 +207,23 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "not found"})
 		return
 	}
+	if !canAccess(sess, r) {
+		writeJSON(w, 403, map[string]string{"error": "forbidden"})
+		return
+	}
 	writeJSON(w, 200, sess)
 }
 
 // POST /api/canvas/{id}/submit  {text, image(dataURL/base64 png), snapshot(json)}
 func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if sess, ok := s.store.Get(id); !ok {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	} else if !canAccess(sess, r) {
+		writeJSON(w, 403, map[string]string{"error": "forbidden"})
+		return
+	}
 	var req struct {
 		Text     string          `json:"text"`
 		Image    string          `json:"image"` // data URL or raw base64 PNG
@@ -234,7 +260,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 // GET /api/canvas/{id}/image.png
 func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, ok := s.store.Get(id); !ok {
+	if sess, ok := s.store.Get(id); !ok || !canAccess(sess, r) {
 		http.NotFound(w, r)
 		return
 	}
@@ -251,7 +277,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 // GET /api/canvas/{id}/snapshot.json
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, ok := s.store.Get(id); !ok {
+	if sess, ok := s.store.Get(id); !ok || !canAccess(sess, r) {
 		http.NotFound(w, r)
 		return
 	}
@@ -264,15 +290,35 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.Write(b)
 }
 
-// GET /api/canvas  -> list (debug/dashboard)
+// GET /api/canvas  -> list sessions the requester may access
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, s.store.List())
+	all := s.store.List()
+	out := make([]*Session, 0, len(all))
+	for _, sess := range all {
+		if canAccess(sess, r) {
+			out = append(out, sess)
+		}
+	}
+	writeJSON(w, 200, out)
 }
 
-// GET /c/{id} -> canvas page
+// GET /c/{id} -> canvas page (the page the human opens to draw)
 func (s *Server) handleCanvasPage(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.store.Get(r.PathValue("id")); !ok {
+	sess, ok := s.store.Get(r.PathValue("id"))
+	if !ok {
 		http.Error(w, "canvas not found", 404)
+		return
+	}
+	// If owned but the visitor has no identity yet, send them through exe.dev
+	// login so the proxy attaches X-ExeDev-Email, then bring them back here.
+	if sess.Owner != "" && userEmail(r) == "" {
+		v := url.Values{}
+		v.Set("redirect", r.URL.Path)
+		http.Redirect(w, r, "/__exe.dev/login?"+v.Encode(), http.StatusFound)
+		return
+	}
+	if !canAccess(sess, r) {
+		http.Error(w, "This canvas belongs to a different account.", 403)
 		return
 	}
 	http.ServeFile(w, r, filepath.Join(s.staticDir, "canvas.html"))
