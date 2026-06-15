@@ -1,90 +1,103 @@
-# Agent Canvas
+<div align="center">
 
-A TLDraw-backed canvas that a command-line coding agent can pop up for a human.
+# 🎨 Agent Canvas
 
-## Flow
+### Your coding agent needs a picture, not a paragraph. Draw it on your phone.
 
-1. Agent runs `canvas-cli request "Sketch the blog header"`.
-2. CLI creates a session and prints a link: `https://canvas.exe.xyz/c/<id>`.
-3. You open it on your phone (exe.dev proxy authenticates you), draw on the
-   TLDraw canvas, and tap **Send**.
-4. On Send, the browser exports a PNG + the TLDraw snapshot and POSTs them;
-   the session flips to `done`.
-5. The CLI, which has been polling, sees `done`, downloads the PNG (so an LLM
-   can *see* the drawing) and the snapshot JSON.
+<img src="assets/canvas.png" width="300" alt="The Agent Canvas drawing pad — a landing-page layout sketched in ink on dark paper" />
 
-## Components
+</div>
 
-- `main.go` — zero-dependency Go server. File-backed session store under `data/`.
-- `static/canvas.html` — TLDraw editor (loaded from esm.sh CDN, no build step).
-- `static/index.html` — dashboard to create/list sessions.
-- `canvas-cli` — bash helper an agent calls.
+---
 
-## API
+Sometimes words aren't enough. You're working with a command-line coding agent
+and you want to say *"put the nav **here**, make the hero **this** shape, line
+the cards up like **so**"* — and typing that out is slower and worse than just
+**drawing it**.
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/api/canvas` | create `{prompt, by}` → `{id, url, status}` |
-| GET  | `/api/canvas` | list sessions |
-| GET  | `/api/canvas/{id}` | session meta (poll this) |
-| POST | `/api/canvas/{id}/submit` | `{image(dataURL png), snapshot, text}` |
-| GET  | `/api/canvas/{id}/image.png` | exported drawing |
-| GET  | `/api/canvas/{id}/snapshot.json` | TLDraw document snapshot |
-| GET  | `/c/{id}` | the canvas page (open on phone) |
+Agent Canvas lets the agent pop open a drawing pad on your phone. You sketch,
+tap **Send**, and your drawing lands right back in the agent's hands as an image
+it can actually see.
 
-## Access control (email-scoping)
+## How it works
 
-Each session records an **owner** — the exe.dev email of whoever created it
-(`X-ExeDev-Email`, set by the proxy for both the human's cookie session and the
-agent's bearer token, which resolve to the same identity).
-
-- A session **with an owner** is private: only that email may view it, draw on
-  it, or read its image/snapshot. Others get `403`; the list endpoint hides it;
-  an unauthenticated visitor to `/c/{id}` is bounced through exe.dev login.
-- A session **without an owner** is unrestricted. This happens only when it was
-  created with no identity — i.e. an agent hitting `http://localhost:8000` on
-  the VM itself. That path is already private because the exe.dev proxy is
-  private by default, so only the VM owner can reach it.
-
-Upshot: when an **off-VM** agent creates a canvas with your bearer token, the
-session is locked to your account — a leaked link is useless to anyone else.
-
-## Install (register with an agent)
-
-`./install` auto-detects VM vs laptop and wires up the chosen agent:
+**1. The agent asks for a sketch.**
+It runs a single command and gets back a link:
 
 ```sh
-./install claude-code        # register MCP server with Claude Code
-./install codex              # print ~/.codex/config.toml block
-./install claude-desktop     # print claude_desktop_config.json block
-./install cli                # symlink canvas-cli into ~/.local/bin
+canvas-cli request "Sketch the landing page layout"
 ```
 
-Off the VM it offers to mint a 30-day VM bearer token via
-`ssh exe.dev ssh-key generate-api-key`.
+**2. You draw it.**
+Open the link on your phone. It's a calm paper-and-ink pad — sketch with your
+finger or a stylus. Press harder or move slower for a thicker line, just like a
+real pen.
 
-## Run
+**3. You send it.**
+Tap **Send**. Your drawing goes straight back to the agent as a picture. The
+agent was waiting the whole time, so the moment you hit Send, it has your sketch
+and keeps working.
+
+<div align="center">
+<table>
+<tr>
+<td align="center" width="50%">
+<img src="assets/dashboard.png" width="270" alt="The dashboard listing every canvas request" /><br />
+<sub><b>Every request in one place</b> — with thumbnails of finished drawings</sub>
+</td>
+<td align="center" width="50%">
+<img src="assets/settings.png" width="270" alt="The settings menu for clearing and filtering requests" /><br />
+<sub><b>Tidy up from the ⚙ menu</b> — clear, hide, or filter requests</sub>
+</td>
+</tr>
+</table>
+</div>
+
+## Why it's nice
+
+- **A sketch carries intent that's painful to type** — proportions, placement,
+  the rough shape of an idea. A ten-second drawing beats a paragraph of
+  description.
+- **It keeps a human in the loop** for exactly the moments that need one, without
+  breaking the agent's flow.
+- **The pad opens instantly** — no app to install, no heavy editor. Just a web
+  page with a warm paper feel and ink that responds to pressure and speed
+  (inspired by [inkwash](https://github.com/johnowhitaker/inkwash)).
+- Dark or light (tap ◐), pick an ink colour, change pen size, undo, clear.
+
+## Try it
+
+Run the server:
 
 ```sh
-go build -o canvas . && ./canvas        # listens on :8000
+go build -o canvas . && ./canvas        # serves on http://localhost:8000
 ```
 
-Or install the service:
+Put the helper on your PATH:
 
 ```sh
-sudo cp canvas.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now canvas
+./install                               # symlinks canvas-cli into ~/.local/bin
 ```
 
-## CLI usage
+Then, from your agent (or your own shell):
 
 ```sh
-./canvas-cli request "Sketch the homepage layout"   # create + wait + download
-./canvas-cli create  "prompt..."                     # create only
-./canvas-cli wait    <id> [out.png]                  # poll + download
-./canvas-cli status  <id>
+canvas-cli request "Sketch the homepage"   # prints a link, waits for your drawing
 ```
 
-Env: `CANVAS_BASE` (agent-side, default `http://localhost:8000`),
-`CANVAS_PUBLIC` (link shown to human, default `https://canvas.exe.xyz`),
-`CANVAS_POLL` (seconds).
+That's the whole loop. `canvas-cli` sorts out access on its own — on your dev
+box it just talks to the local server; off it, it signs a short-lived token with
+the SSH key you already use, so a shared link stays private to you.
+
+## Managing requests
+
+The server's home page is a dashboard of every request, newest first, with
+thumbnails of the finished ones. The **⚙ settings menu** lets you clear
+completed / pending / all requests, hide the finished ones, or pause
+auto-refresh — and every card has an **×** to delete just that one.
+
+---
+
+<div align="center">
+<sub>A tiny zero-dependency Go server with a file-backed store · plays nicely behind the <a href="https://exe.dev">exe.dev</a> proxy</sub>
+</div>
