@@ -2,108 +2,368 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="theme-color" content="#121110" />
 <title>Canvas</title>
-<link rel="stylesheet" href="https://esm.sh/tldraw@3.4.0/tldraw.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400..600;1,6..72,400..600&family=JetBrains+Mono:wght@400;500&display=swap" />
 <style>
-  html, body, #root { margin:0; height:100%; width:100%; overflow:hidden; font-family:system-ui,sans-serif; }
+  /* Warm chrome (dark default) + an inkwash paper sheet inset inside it.
+     The paper + ink palette is lifted from johnowhitaker/inkwash. */
+  :root {
+    color-scheme: dark;
+    --bg: #121110;
+    --surface: #171512;
+    --border: #3a3630;
+    --text: #d8d3ca;
+    --text-bright: #ecebe5;
+    --text-muted: #9d988e;
+    --accent: #e4916a;
+    --green: #75c596;
+    --red: #ef7568;
+    --shadow: rgba(0, 0, 0, 0.34);
+    /* inkwash sheet — dark "night ink" by default to match warm chrome */
+    --paper: #1b1712;
+    --paper-grain: 7;     /* grain amplitude, 0-255 */
+    --ink: #ece6da;       /* warm off-white ink on dark paper */
+    --font-serif: "Newsreader", ui-serif, Georgia, serif;
+    --font-code: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  [data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface: #ffffff;
+    --border: #deded8;
+    --text: #2a2a2a;
+    --text-bright: #111111;
+    --text-muted: #68645d;
+    --accent: #b43a1a;
+    --green: #317456;
+    --red: #b43a1a;
+    --shadow: rgba(17, 17, 17, 0.08);
+    /* classic inkwash: warm paper, blue-black ink */
+    --paper: #f1efe8;
+    --paper-grain: 5;
+    --ink: #262630;
+  }
+  *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; width: 100%; overflow: hidden; overscroll-behavior: none; }
+  body {
+    background: radial-gradient(circle at 14% 8%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 24rem), var(--bg);
+    color: var(--text); font-family: var(--font-serif);
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    transition: background .2s ease, color .2s ease;
+  }
   #bar {
-    position:fixed; top:0; left:0; right:0; z-index:1000;
-    display:flex; align-items:center; gap:10px;
-    padding:8px 12px; background:#111; color:#fff;
-    box-shadow:0 1px 6px rgba(0,0,0,.3);
+    position: fixed; top: max(8px, env(safe-area-inset-top)); left: 8px; right: 8px; z-index: 1000;
+    display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 14px; min-height: 48px;
+    background: color-mix(in srgb, var(--surface) 90%, transparent);
+    border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: 0 10px 28px var(--shadow); backdrop-filter: blur(8px);
   }
-  #prompt { flex:1; font-size:14px; line-height:1.3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #prompt {
+    flex: 1; min-width: 0; color: var(--text-muted);
+    font-family: var(--font-code); font-size: 12.5px; line-height: 1.35;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .iconBtn {
+    appearance: none; border: 0; background: transparent; color: var(--text-muted);
+    width: 36px; height: 36px; border-radius: 999px; cursor: pointer; padding: 0; font-size: 16px;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: color .16s ease, background .16s ease;
+  }
+  .iconBtn:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
   #send {
-    background:#2563eb; color:#fff; border:0; border-radius:8px;
-    padding:8px 16px; font-size:15px; font-weight:600; cursor:pointer;
+    appearance: none; border: 1px solid var(--accent); border-radius: 999px;
+    padding: 9px 18px; min-height: 40px; background: var(--accent); color: var(--bg);
+    font-family: var(--font-code); font-size: 13px; font-weight: 600; cursor: pointer;
+    box-shadow: 0 8px 24px var(--shadow);
+    transition: color .16s ease, background .16s ease, opacity .16s ease;
   }
-  #send:disabled { opacity:.5; }
-  #editor { position:fixed; top:46px; left:0; right:0; bottom:0; }
+  #send:hover:not(:disabled) { background: transparent; color: var(--accent); }
+  #send:disabled { opacity: .45; cursor: default; }
+  #editor {
+    position: fixed; top: calc(max(8px, env(safe-area-inset-top)) + 56px);
+    left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom));
+    border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+    box-shadow: 0 12px 34px var(--shadow); background: var(--paper);
+  }
+  #pad { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  /* floating pen controls, bottom-centre of the sheet */
+  #tools {
+    position: fixed; bottom: calc(max(8px, env(safe-area-inset-bottom)) + 14px); left: 50%;
+    transform: translateX(-50%); z-index: 1000; display: flex; align-items: center; gap: 14px;
+    padding: 8px 14px; border-radius: 999px;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    border: 1px solid var(--border); box-shadow: 0 10px 28px var(--shadow); backdrop-filter: blur(8px);
+  }
+  #tools input[type=color] {
+    appearance: none; -webkit-appearance: none; width: 24px; height: 24px; padding: 0;
+    border: 1px solid var(--border); border-radius: 50%; background: none; cursor: pointer;
+  }
+  #tools input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+  #tools input[type=color]::-webkit-color-swatch { border: none; border-radius: 50%; }
+  #tools input[type=range] {
+    -webkit-appearance: none; appearance: none; width: 90px; height: 18px; background: transparent; cursor: pointer;
+  }
+  #tools input[type=range]::-webkit-slider-runnable-track { height: 2px; border-radius: 2px; background: var(--border); }
+  #tools input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent); margin-top: -6px;
+  }
+  #tools input[type=range]::-moz-range-track { height: 2px; border-radius: 2px; background: var(--border); }
+  #tools input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: var(--accent); }
+  .tbtn {
+    appearance: none; border: 0; background: transparent; color: var(--text-muted);
+    font-family: var(--font-code); font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    cursor: pointer; padding: 6px 4px; transition: color .16s ease;
+  }
+  .tbtn:hover { color: var(--accent); }
+  .sep { width: 1px; height: 20px; background: var(--border); }
   #toast {
-    position:fixed; bottom:16px; left:50%; transform:translateX(-50%);
-    background:#16a34a; color:#fff; padding:10px 18px; border-radius:8px;
-    z-index:2000; display:none; font-size:14px;
+    position: fixed; top: calc(max(8px, env(safe-area-inset-top)) + 64px); left: 50%;
+    transform: translateX(-50%); z-index: 2000; display: none;
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    border: 1px solid var(--border); color: var(--text-bright);
+    padding: 9px 16px; border-radius: 999px; font-family: var(--font-code); font-size: 12.5px;
+    box-shadow: 0 12px 30px var(--shadow);
   }
 </style>
 </head>
 <body>
   <div id="bar">
-    <div id="prompt">Loading…</div>
+    <div id="prompt">loading…</div>
+    <button id="theme" class="iconBtn" title="Toggle light / dark">◐</button>
     <button id="send" disabled>Send</button>
   </div>
-  <div id="editor"></div>
+  <div id="editor"><canvas id="pad"></canvas></div>
+  <div id="tools">
+    <input id="ink" type="color" title="Ink colour" />
+    <input id="size" type="range" min="0.5" max="2.4" step="0.05" value="1" title="Pen size" />
+    <span class="sep"></span>
+    <button id="undo" class="tbtn" title="Undo (z)">undo</button>
+    <button id="clear" class="tbtn" title="Clear (c)">clear</button>
+  </div>
   <div id="toast"></div>
 
-<script type="module">
-import React from 'https://esm.sh/react@18.3.1';
-import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client';
-import { Tldraw, getSnapshot, exportToBlob } from 'https://esm.sh/tldraw@3.4.0?deps=react@18.3.1,react-dom@18.3.1';
-
+<script>
+"use strict";
 const sessionId = location.pathname.split('/').pop();
-let editor = null;
-
 const promptEl = document.getElementById('prompt');
-const sendBtn = document.getElementById('send');
-const toast = document.getElementById('toast');
+const sendBtn  = document.getElementById('send');
+const themeBtn = document.getElementById('theme');
+const inkInput = document.getElementById('ink');
+const sizeInput = document.getElementById('size');
+const toast    = document.getElementById('toast');
+const editor   = document.getElementById('editor');
+const pad      = document.getElementById('pad');
+const ctx      = pad.getContext('2d');
 
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+// ---- theme (shared with the dashboard via localStorage) -----------------
+let theme = localStorage.getItem('canvas-theme') || 'dark';
+let userPickedInk = false;
+function applyTheme(t) {
+  theme = t;
+  document.documentElement.setAttribute('data-theme', t);
+  localStorage.setItem('canvas-theme', t);
+  if (!userPickedInk) inkInput.value = rgbToHex(cssVar('--ink'));
+  buildPaper();
+  repaint();
+}
+themeBtn.addEventListener('click', () => applyTheme(theme === 'dark' ? 'light' : 'dark'));
+
+function rgbToHex(c) {
+  if (c[0] === '#') return c;
+  const m = c.match(/\d+/g);
+  if (!m) return '#000000';
+  return '#' + m.slice(0, 3).map(n => (+n).toString(16).padStart(2, '0')).join('');
+}
+
+// ---- paper texture (subtle grain, baked into a tiled pattern) -----------
+let paperPattern = null;
+function buildPaper() {
+  const base = cssVar('--paper');
+  const amp = parseFloat(cssVar('--paper-grain')) || 5;
+  let r = 27, g = 23, b = 18;
+  if (base[0] === '#') {
+    const h = base.slice(1);
+    r = parseInt(h.slice(0, 2), 16); g = parseInt(h.slice(2, 4), 16); b = parseInt(h.slice(4, 6), 16);
+  } else {
+    const m = base.match(/\d+/g); if (m) [r, g, b] = m.map(Number);
+  }
+  const N = 200, tile = document.createElement('canvas');
+  tile.width = tile.height = N;
+  const tctx = tile.getContext('2d');
+  const img = tctx.createImageData(N, N);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 2 * amp;
+    img.data[i]     = Math.max(0, Math.min(255, r + n));
+    img.data[i + 1] = Math.max(0, Math.min(255, g + n));
+    img.data[i + 2] = Math.max(0, Math.min(255, b + n));
+    img.data[i + 3] = 255;
+  }
+  tctx.putImageData(img, 0, 0);
+  paperPattern = ctx.createPattern(tile, 'repeat');
+}
+
+// ---- geometry -----------------------------------------------------------
+let dpr = 1, W = 0, H = 0, maxDim = 1;     // device px
+function resize() {
+  const rect = editor.getBoundingClientRect();
+  dpr = Math.min(window.devicePixelRatio || 1, 3);
+  W = Math.max(2, Math.round(rect.width * dpr));
+  H = Math.max(2, Math.round(rect.height * dpr));
+  maxDim = Math.max(W, H);
+  pad.width = W; pad.height = H;
+  buildPaper();
+  repaint();
+}
+window.addEventListener('resize', resize);
+
+// ---- strokes (normalised, so they survive resize / rotate) --------------
+// stroke = { color, pts: [{x,y,w}] }  with x,y in 0..1 and w = diameter / maxDim
+let strokes = [];
+let cur = null;
+
+function paintPaper() {
+  ctx.fillStyle = paperPattern || cssVar('--paper');
+  ctx.fillRect(0, 0, W, H);
+}
+function drawStroke(s) {
+  ctx.fillStyle = s.color;
+  const pts = s.pts;
+  if (pts.length === 1) { dot(pts[0].x * W, pts[0].y * H, pts[0].w * maxDim / 2); return; }
+  for (let i = 1; i < pts.length; i++) stampSeg(pts[i - 1], pts[i]);
+}
+function repaint() {
+  paintPaper();
+  for (const s of strokes) drawStroke(s);
+}
+function dot(px, py, r) { ctx.beginPath(); ctx.arc(px, py, Math.max(0.4, r), 0, 7); ctx.fill(); }
+function stampSeg(a, b) {
+  const ax = a.x * W, ay = a.y * H, bx = b.x * W, by = b.y * H;
+  const ar = a.w * maxDim / 2, br = b.w * maxDim / 2;
+  const dist = Math.hypot(bx - ax, by - ay);
+  const steps = Math.max(1, Math.min(120, Math.ceil(dist / Math.max(1, Math.min(ar, br) * 0.5))));
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    dot(ax + (bx - ax) * t, ay + (by - ay) * t, ar + (br - ar) * t);
+  }
+}
+
+// ---- pen feel (ported from inkwash penRadius) ---------------------------
+let speed = 0, pr = 0.5, lastX = 0, lastY = 0, lastT = 0, lastW = 0;
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function sizeMult() { return parseFloat(sizeInput.value) || 1; }
+function penWidthNorm() {
+  // radius as a fraction of maxDim; *2 -> diameter
+  const r = (0.0016 + 0.0042 * pr) * clamp(1.12 - speed * 0.3, 0.55, 1.12) * sizeMult();
+  return r * 2;
+}
+
+function feed(xCss, yCss, tMs, isPen, pressure) {
+  if (!cur) return;
+  const rect = editor.getBoundingClientRect();
+  const maxCss = Math.max(rect.width, rect.height);
+  const nx = clamp(xCss / rect.width, 0, 1), ny = clamp(yCss / rect.height, 0, 1);
+  if (cur.pts.length === 0) {
+    pr = isPen ? clamp(pressure || 0.5, 0.08, 1) : 0.5;
+    speed = 0; lastX = xCss; lastY = yCss; lastT = tMs;
+    const w = penWidthNorm(); lastW = w;
+    cur.pts.push({ x: nx, y: ny, w });
+    ctx.fillStyle = cur.color;
+    dot(nx * W, ny * H, w * maxDim / 2);
+    return;
+  }
+  const dt = Math.max((tMs - lastT) / 1000, 1e-4);
+  const dNorm = Math.hypot(xCss - lastX, yCss - lastY) / maxCss;
+  const inst = dNorm / dt;
+  speed += (inst - speed) * (1 - Math.exp(-dt * 10));
+  const targetP = isPen ? clamp(pressure || 0.5, 0.08, 1) : clamp(1.18 - speed * 0.95, 0.12, 1);
+  pr += (targetP - pr) * (1 - Math.exp(-dt * 18));
+  const w = penWidthNorm();
+  const a = { x: lastX / rect.width, y: lastY / rect.height, w: lastW };
+  const b = { x: nx, y: ny, w };
+  ctx.fillStyle = cur.color;
+  stampSeg(a, b);
+  cur.pts.push(b);
+  lastX = xCss; lastY = yCss; lastT = tMs; lastW = w;
+}
+
+function ptXY(e) { const r = editor.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+pad.addEventListener('pointerdown', (e) => {
+  e.preventDefault(); pad.setPointerCapture(e.pointerId);
+  cur = { color: inkInput.value, pts: [] };
+  const [x, y] = ptXY(e);
+  feed(x, y, e.timeStamp, e.pointerType === 'pen', e.pressure);
+});
+pad.addEventListener('pointermove', (e) => {
+  if (!cur) return;
+  e.preventDefault();
+  const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+  for (const ev of (evs.length ? evs : [e])) {
+    const [x, y] = ptXY(ev);
+    feed(x, y, ev.timeStamp, e.pointerType === 'pen', ev.pressure);
+  }
+});
+function endStroke() {
+  if (cur && cur.pts.length) strokes.push(cur);
+  cur = null;
+}
+pad.addEventListener('pointerup', endStroke);
+pad.addEventListener('pointercancel', endStroke);
+window.addEventListener('blur', endStroke);
+
+// ---- tools --------------------------------------------------------------
+inkInput.addEventListener('input', () => { userPickedInk = true; });
+document.getElementById('undo').addEventListener('click', () => { strokes.pop(); repaint(); });
+document.getElementById('clear').addEventListener('click', () => { strokes = []; repaint(); });
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'z') { strokes.pop(); repaint(); }
+  else if (e.key === 'c') { strokes = []; repaint(); }
+});
+
+// ---- toast --------------------------------------------------------------
 function showToast(msg, color) {
   toast.textContent = msg;
-  toast.style.background = color || '#16a34a';
+  toast.style.borderColor = color || 'var(--green)';
+  toast.style.color = color || 'var(--green)';
   toast.style.display = 'block';
 }
 
-// Load session meta for the prompt.
+// ---- boot ---------------------------------------------------------------
+applyTheme(theme);
+resize();
+sendBtn.disabled = false;
+
 fetch(`/api/canvas/${sessionId}`).then(r => r.json()).then(s => {
   promptEl.textContent = s.prompt || 'Draw something';
   document.title = 'Canvas · ' + (s.prompt || '').slice(0, 30);
-  if (s.status === 'done') {
-    showToast('Already submitted ✓');
-  }
+  if (s.status === 'done') showToast('Already submitted ✓');
 }).catch(() => { promptEl.textContent = 'Canvas'; });
 
-function App() {
-  return React.createElement(Tldraw, {
-    onMount: (ed) => {
-      editor = ed;
-      window.tldrawEditor = ed; // for automation/debugging
-      sendBtn.disabled = false;
-    }
-  });
-}
-createRoot(document.getElementById('editor')).render(React.createElement(App));
-
+// ---- send ---------------------------------------------------------------
 sendBtn.addEventListener('click', async () => {
-  if (!editor) return;
   sendBtn.disabled = true;
   sendBtn.textContent = 'Sending…';
   try {
-    const shapeIds = editor.getCurrentPageShapeIds();
     let imageDataUrl = '';
-    if (shapeIds.size > 0) {
-      const blob = await exportToBlob({
-        editor,
-        ids: [...shapeIds],
-        format: 'png',
-        opts: { background: true, padding: 16, scale: 2 },
-      });
-      imageDataUrl = await new Promise((res) => {
-        const fr = new FileReader();
-        fr.onload = () => res(fr.result);
-        fr.readAsDataURL(blob);
-      });
-    }
-    const { document: doc } = getSnapshot(editor.store);
+    if (strokes.length) imageDataUrl = pad.toDataURL('image/png');
+    const snapshot = { v: 1, w: W, h: H, dpr, theme, strokes };
     const resp = await fetch(`/api/canvas/${sessionId}/submit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: imageDataUrl, snapshot: doc }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: imageDataUrl, snapshot }),
     });
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     showToast('Sent back to agent ✓');
     sendBtn.textContent = 'Sent ✓';
   } catch (e) {
-    showToast('Failed: ' + e.message, '#dc2626');
+    showToast('Failed: ' + e.message, 'var(--red)');
     sendBtn.disabled = false;
     sendBtn.textContent = 'Send';
   }
