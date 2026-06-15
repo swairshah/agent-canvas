@@ -2,34 +2,193 @@
 # canvas-cli: request a hand-drawn canvas from a human, block until they send it back.
 #
 # Usage:
-#   canvas-cli request "Sketch the blog header layout"   # creates + waits, downloads result
+#   canvas-cli request "Sketch the blog header layout"   # create + wait, download result
 #   canvas-cli create  "prompt..."                        # just create, print id+url (no wait)
 #   canvas-cli wait    <id> [out.png]                     # poll until done, download image
 #   canvas-cli status  <id>
+#   canvas-cli token                                       # print the bearer token it would use
 #
-# Env:
-#   CANVAS_BASE   base URL the agent polls.
-#                   on the VM:  http://localhost:8000  (default, no token)
-#                   off the VM: https://canvas.exe.xyz  (set CANVAS_TOKEN)
-#   CANVAS_TOKEN  exe.dev VM bearer token, for off-VM agents (laptop CLI/desktop)
-#                   ssh exe.dev ssh-key generate-api-key --vm=<vm> --label=canvas
-#   CANVAS_PUBLIC public URL shown to the human  (default https://canvas.exe.xyz)
-#   CANVAS_POLL   poll interval seconds (default 3)
+# Authentication ("just works" on any machine that can `ssh exe.dev`):
+#   - On the exe.dev VM: talks to http://localhost:8000, no token.
+#   - Off the VM: reaches https://canvas.exe.xyz through the exe.dev proxy, which
+#     requires a bearer token. canvas-cli MINTS ONE FOR YOU by signing it locally
+#     with the same SSH key `ssh exe.dev` uses (ssh-keygen -Y sign) — no new key is
+#     registered on your account. The token is cached and reused; it is re-minted
+#     only when it expires. If local signing isn't possible it falls back to
+#     `ssh exe.dev ssh-key generate-api-key`; if you're not authenticated to
+#     exe.dev at all, it tells you how to fix that.
+#
+# Env overrides:
+#   CANVAS_BASE        base URL the agent polls (default: auto — localhost on VM, else proxy)
+#   CANVAS_PUBLIC      public URL shown to the human / proxy host (default https://canvas.exe.xyz)
+#   CANVAS_TOKEN       use this bearer token verbatim (skips minting)
+#   CANVAS_TOKEN_FILE  where the minted token is cached (default ~/.config/canvas-cli/token)
+#   CANVAS_SSH_KEY     SSH private key to sign with (default: keys ssh exe.dev uses)
+#   CANVAS_VM          VM name for the token namespace (default: derived from CANVAS_PUBLIC)
+#   CANVAS_TOKEN_TTL_DAYS  token lifetime in days (default 30)
+#   CANVAS_POLL        backoff seconds after a failed wait request (default 3).
+#                      'wait' uses server long-poll, not fixed-interval polling.
+#   CANVAS_BY          agent label recorded on created sessions (default agent)
 set -euo pipefail
 
-BASE="${CANVAS_BASE:-http://localhost:8000}"
 PUBLIC="${CANVAS_PUBLIC:-https://canvas.exe.xyz}"
 POLL="${CANVAS_POLL:-3}"
+TOKEN_FILE="${CANVAS_TOKEN_FILE:-$HOME/.config/canvas-cli/token}"
+TTL_DAYS="${CANVAS_TOKEN_TTL_DAYS:-30}"
 
 need() { command -v "$1" >/dev/null || { echo "need $1" >&2; exit 1; }; }
 need curl; need jq
 
-# cx: curl wrapper that injects the exe.dev VM bearer token when CANVAS_TOKEN is
-# set. Required when the agent runs OFF the VM and reaches the canvas through
-# https://canvas.exe.xyz; omitted (harmless) when hitting localhost on the VM.
-cx() {
+# Proxy host + VM name derived from the public URL: https://canvas.exe.xyz -> canvas.exe.xyz / canvas
+HOST="$(printf '%s' "$PUBLIC" | sed -E 's#^[a-z]+://##; s#/.*##; s#:.*##')"
+VM="${CANVAS_VM:-${HOST%%.*}}"
+
+BASE=""
+TOKEN=""
+TOKEN_SRC=""   # env | cache | fresh
+
+b64url() { tr -d '\n=' | tr '+/' '-_'; }
+
+# verify_token: does $TOKEN authenticate against the proxy? (200 = yes)
+verify_token() {
+  [ -n "$TOKEN" ] || return 1
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 12 \
+            -H "X-Exedev-Authorization: Bearer $TOKEN" "$BASE/api/canvas" 2>/dev/null || echo 000)"
+  [ "$code" = 200 ]
+}
+
+# sign_token <keyfile>: locally sign an exe0 VM token scoped to this VM. No new
+# key is registered on the account — exe.dev verifies the signature against the
+# key's already-registered public half. Sets $TOKEN on success.
+sign_token() {
+  local key="$1" exp perms payload sig sigblob
+  [ -f "$key" ] || return 1
+  command -v ssh-keygen >/dev/null 2>&1 || return 1
+  exp=$(( $(date +%s) + TTL_DAYS*24*3600 ))
+  perms="{\"exp\":${exp}}"
+  payload="$(printf '%s' "$perms" | base64 | b64url)"
+  # Don't hang on a passphrase prompt for an encrypted key — fail and fall back.
+  sig="$(printf '%s' "$perms" | SSH_ASKPASS=/usr/bin/false SSH_ASKPASS_REQUIRE=force DISPLAY= \
+           ssh-keygen -Y sign -f "$key" -n "v0@${HOST}" 2>/dev/null)" || return 1
+  sigblob="$(printf '%s\n' "$sig" | sed '1d;$d' | b64url)"
+  [ -n "$sigblob" ] || return 1
+  TOKEN="exe0.${payload}.${sigblob}"
+}
+
+# the SSH key `ssh exe.dev` actually authenticates with (one handshake)
+discover_exedev_key() {
+  ssh -v -o BatchMode=yes -o ConnectTimeout=8 exe.dev exit 2>&1 \
+    | awk '/Server accepts key:/{print $5; exit}'
+}
+
+local_candidate_keys() {
+  [ -n "${CANVAS_SSH_KEY:-}" ] && echo "$CANVAS_SSH_KEY"
+  local d
+  for d in id_ed25519 id_rsa id_ecdsa; do
+    [ -f "$HOME/.ssh/$d" ] && echo "$HOME/.ssh/$d"
+  done
+}
+
+# server_mint_token: ask exe.dev to generate a VM token (registers a single,
+# reused SSH key labelled 'canvas-cli'). Fallback when local signing can't work.
+server_mint_token() {
+  ssh -o BatchMode=yes -o ConnectTimeout=8 exe.dev whoami >/dev/null 2>&1 || return 1
+  local json
+  json="$(ssh -o BatchMode=yes -o ConnectTimeout=15 exe.dev \
+            "ssh-key generate-api-key --vm=${VM} --label=canvas-cli --exp=${TTL_DAYS}d --json" 2>/dev/null)" || return 1
+  TOKEN="$(printf '%s' "$json" | jq -r '.token // empty')"
+  [ -n "$TOKEN" ]
+}
+
+save_token() {
+  mkdir -p "$(dirname "$TOKEN_FILE")"
+  ( umask 077; printf '%s' "$TOKEN" > "$TOKEN_FILE" )
+  echo "  cached at $TOKEN_FILE  (revoke local key access on exe.dev to invalidate)" >&2
+}
+
+auth_help() {
+  cat >&2 <<EOF
+✗ canvas-cli couldn't authenticate to $BASE.
+
+This machine isn't set up to talk to exe.dev. Do ONE of these, then re-run:
+
+  1) Make 'ssh exe.dev' work from here (add this machine's SSH key on exe.dev).
+     canvas-cli will then sign a token with that key automatically — no new key.
+
+  2) Generate a token on a machine that IS authenticated to exe.dev:
+       ssh exe.dev ssh-key generate-api-key --vm=${VM} --label=canvas-cli --exp=${TTL_DAYS}d
+     then expose it here:
+       export CANVAS_TOKEN=exe1....            # or save it to ${TOKEN_FILE}
+EOF
+}
+
+mint_token() {
+  local key
+  # 1) local signing with well-known keys — fully offline, no new key.
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if sign_token "$key" && verify_token; then
+      echo "✓ signed a ${TTL_DAYS}-day canvas token with $key (no new key created)" >&2
+      TOKEN_SRC=fresh; save_token; return 0
+    fi
+  done < <(local_candidate_keys)
+  # 2) local signing with whatever key ssh exe.dev uses.
+  key="$(discover_exedev_key || true)"
+  if [ -n "$key" ] && [ -f "$key" ] && sign_token "$key" && verify_token; then
+    echo "✓ signed a ${TTL_DAYS}-day canvas token with $key (no new key created)" >&2
+    TOKEN_SRC=fresh; save_token; return 0
+  fi
+  # 3) server-minted VM token (single reused 'canvas-cli' key).
+  if server_mint_token && verify_token; then
+    echo "✓ minted a ${TTL_DAYS}-day canvas token via exe.dev (key label: canvas-cli)" >&2
+    TOKEN_SRC=fresh; save_token; return 0
+  fi
+  auth_help
+  exit 1
+}
+
+# resolve_auth: set $BASE and (when off-VM) a working $TOKEN.
+resolve_auth() {
+  if [ -n "${CANVAS_BASE:-}" ]; then
+    BASE="$CANVAS_BASE"
+  elif curl -fsS -m 2 http://localhost:8000/api/canvas >/dev/null 2>&1; then
+    BASE="http://localhost:8000"            # on the VM
+  else
+    BASE="$PUBLIC"                           # off the VM -> proxy
+  fi
+  case "$BASE" in
+    https://*) ;;                            # proxy: token required (below)
+    *) return ;;                             # localhost/on-VM: no token
+  esac
+
   if [ -n "${CANVAS_TOKEN:-}" ]; then
-    curl -fsS -H "X-Exedev-Authorization: Bearer ${CANVAS_TOKEN}" "$@"
+    TOKEN="$CANVAS_TOKEN"; TOKEN_SRC=env
+  elif [ -f "$TOKEN_FILE" ]; then
+    TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")"; TOKEN_SRC=cache
+  else
+    mint_token; return
+  fi
+
+  # Validate a loaded token; refresh a stale cached one automatically.
+  if ! verify_token; then
+    if [ "$TOKEN_SRC" = env ]; then
+      echo "✗ CANVAS_TOKEN was rejected by $BASE (expired or not scoped to VM '$VM')." >&2
+      exit 1
+    fi
+    echo "→ cached canvas token rejected; refreshing…" >&2
+    case "$TOKEN" in
+      exe1.*) ssh -o BatchMode=yes -o ConnectTimeout=8 exe.dev "ssh-key remove canvas-cli" >/dev/null 2>&1 || true ;;
+    esac
+    rm -f "$TOKEN_FILE"; TOKEN=""
+    mint_token
+  fi
+}
+
+# cx: curl wrapper that injects the exe.dev bearer token when we have one.
+cx() {
+  if [ -n "$TOKEN" ]; then
+    curl -fsS -H "X-Exedev-Authorization: Bearer $TOKEN" "$@"
   else
     curl -fsS "$@"
   fi
@@ -46,10 +205,13 @@ status() { cx "$BASE/api/canvas/$1"; }
 
 wait_done() {
   local id="$1" out="${2:-canvas-$1.png}"
-  echo "⏳ waiting for human to draw (polling every ${POLL}s)…" >&2
+  echo "⏳ waiting for human to draw…" >&2
   while :; do
-    local st
-    st=$(status "$id" | jq -r .status)
+    # Long-poll: the server blocks until Send (delivered instantly) or returns
+    # 'pending' after its ~25s ceiling, at which point we just reconnect.
+    local meta st
+    meta="$(cx --max-time 40 "$BASE/api/canvas/$id/wait" 2>/dev/null || true)"
+    st="$(printf '%s' "$meta" | jq -r '.status // empty' 2>/dev/null || true)"
     if [ "$st" = "done" ]; then
       cx "$BASE/api/canvas/$id/image.png" -o "$out" || true
       cx "$BASE/api/canvas/$id/snapshot.json" -o "${out%.png}.snapshot.json" 2>/dev/null || true
@@ -57,22 +219,34 @@ wait_done() {
       status "$id" | jq '{id,status,text,has_image,has_snapshot}'
       return 0
     fi
-    sleep "$POLL"
+    # Empty/error response (proxy hiccup, etc.) — brief backoff before retrying.
+    [ -z "$st" ] && sleep "$POLL"
   done
 }
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
+  token)
+    resolve_auth
+    printf '%s\n' "$TOKEN"
+    ;;
   create)
-    create "${1:?prompt required}" | jq --arg pub "$PUBLIC" '. + {public_url: ($pub + .url)}'
+    resolve_auth
+    out="$(create "${1:?prompt required}" | jq --arg pub "$PUBLIC" '. + {public_url: ($pub + .url)}')"
+    printf '%s\n' "$out"
+    cid="$(printf '%s' "$out" | jq -r .id)"
+    echo "→ created but NOT waiting. To block until you draw + Send:" >&2
+    echo "    canvas-cli wait $cid" >&2
+    echo "  (or use 'canvas-cli request \"…\"' to create + wait in one step)" >&2
     ;;
   request)
+    resolve_auth
     resp=$(create "${1:?prompt required}")
     id=$(echo "$resp" | jq -r .id)
     echo "🎨 Open on your phone: $PUBLIC/c/$id" >&2
     wait_done "$id" "${2:-canvas-$id.png}"
     ;;
-  wait)   wait_done "${1:?id required}" "${2:-}" ;;
-  status) status "${1:?id required}" | jq . ;;
-  *) echo "usage: canvas-cli {request|create|wait|status} ..." >&2; exit 1 ;;
+  wait)   resolve_auth; wait_done "${1:?id required}" "${2:-}" ;;
+  status) resolve_auth; status "${1:?id required}" | jq . ;;
+  *) echo "usage: canvas-cli {request|create|wait|status|token} ..." >&2; exit 1 ;;
 esac

@@ -1,131 +1,37 @@
 #!/usr/bin/env bash
-# install — register the Agent Canvas tools with a coding agent.
+# install — put canvas-cli on your PATH.
 #
 # Usage:
-#   ./install claude-code          # register MCP server with Claude Code
-#   ./install codex                # print Codex ~/.codex/config.toml block
-#   ./install claude-desktop       # print claude_desktop_config.json block
-#   ./install cli                  # symlink canvas-cli into ~/.local/bin
+#   ./install            # symlink canvas-cli into ~/.local/bin
 #
-# It auto-detects whether you're ON the exe.dev VM (talks to localhost, no
-# token, sessions owned by your exe.dev identity automatically) or on a laptop
-# (talks to the proxy, needs a VM bearer token). For the laptop case it will
-# offer to mint a token via `ssh exe.dev ssh-key generate-api-key`.
+# canvas-cli bootstraps its own auth: on the exe.dev VM it talks to localhost
+# (no token); off the VM it signs a token locally with the same SSH key
+# `ssh exe.dev` uses — no new key is registered on your account — and caches it.
+# See the "Authentication" section of the README.
 set -euo pipefail
 
 here() { cd "$(dirname "${BASH_SOURCE[0]}")" && pwd; }
 ROOT="$(here)"
-MCP_BIN="$ROOT/mcp/canvas-mcp"
 CLI_BIN="$ROOT/canvas-cli"
-VM_NAME_DEFAULT="$(hostname)"
 
-# --- detect environment ---------------------------------------------------
 # On the VM, the canvas server answers on localhost:8000.
 ON_VM=false
 if curl -fsS -m 2 http://localhost:8000/api/canvas >/dev/null 2>&1; then
   ON_VM=true
 fi
 
-ensure_mcp() {
-  if [ ! -x "$MCP_BIN" ]; then
-    echo "building canvas-mcp…" >&2
-    ( cd "$ROOT/mcp" && go build -o canvas-mcp . )
-  fi
-}
+mkdir -p "$HOME/.local/bin"
+ln -sf "$CLI_BIN" "$HOME/.local/bin/canvas-cli"
+echo "✅ linked canvas-cli -> ~/.local/bin/canvas-cli" >&2
 
-# Resolve CANVAS_BASE / CANVAS_TOKEN for the off-VM (laptop) case.
-# Echoes two lines: BASE and TOKEN (TOKEN may be empty on the VM).
-resolve_env() {
-  if $ON_VM; then
-    echo "http://localhost:8000"
-    echo ""
-    return
-  fi
-  local base="${CANVAS_BASE:-https://canvas.exe.xyz}"
-  local token="${CANVAS_TOKEN:-}"
-  if [ -z "$token" ]; then
-    local vm="${CANVAS_VM:-$VM_NAME_DEFAULT}"
-    echo "No CANVAS_TOKEN set. Minting one for VM '$vm' via ssh exe.dev…" >&2
-    token="$(ssh exe.dev ssh-key generate-api-key --vm="$vm" --label=canvas --exp=30d 2>/dev/null | tr -d '[:space:]')" || true
-    if [ -z "$token" ]; then
-      echo "  Could not mint a token automatically." >&2
-      echo "  Run: ssh exe.dev ssh-key generate-api-key --vm=<vm> --label=canvas --exp=30d" >&2
-      echo "  then re-run with CANVAS_TOKEN=... ./install $*" >&2
-      exit 1
-    fi
-  fi
-  echo "$base"
-  echo "$token"
-}
+if $ON_VM; then
+  echo "   On the VM: no token needed. Try: canvas-cli request 'Sketch the header'" >&2
+else
+  echo "   Off the VM: canvas-cli signs/caches an exe.dev token on first use" >&2
+  echo "   (needs 'ssh exe.dev' to work). Try: canvas-cli request 'Sketch the header'" >&2
+fi
 
-cmd="${1:-}"
-case "$cmd" in
-  claude-code)
-    ensure_mcp
-    { read -r BASE; read -r TOKEN; } < <(resolve_env)
-    args=(mcp add agent-canvas "$MCP_BIN" -e "CANVAS_BASE=$BASE")
-    [ -n "$TOKEN" ] && args+=(-e "CANVAS_TOKEN=$TOKEN")
-    args+=(-e "CANVAS_PUBLIC=${CANVAS_PUBLIC:-https://canvas.exe.xyz}")
-    if command -v claude >/dev/null; then
-      echo "+ claude ${args[*]}" >&2
-      claude "${args[@]}"
-      echo "✅ registered 'agent-canvas' with Claude Code." >&2
-    else
-      echo "claude CLI not found. Run this yourself:" >&2
-      echo "claude ${args[*]}"
-    fi
-    ;;
-
-  claude-desktop)
-    ensure_mcp
-    { read -r BASE; read -r TOKEN; } < <(resolve_env)
-    envjson="\"CANVAS_BASE\": \"$BASE\", \"CANVAS_PUBLIC\": \"${CANVAS_PUBLIC:-https://canvas.exe.xyz}\""
-    [ -n "$TOKEN" ] && envjson="$envjson, \"CANVAS_TOKEN\": \"$TOKEN\""
-    cat <<JSON >&2
-Add this to your claude_desktop_config.json (mcpServers section):
-
-  "agent-canvas": {
-    "command": "$MCP_BIN",
-    "env": { $envjson }
-  }
-
-macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json
-Windows: %APPDATA%\\Claude\\claude_desktop_config.json
-Then restart Claude Desktop.
-JSON
-    ;;
-
-  codex)
-    ensure_mcp
-    { read -r BASE; read -r TOKEN; } < <(resolve_env)
-    envtoml="CANVAS_BASE = \"$BASE\", CANVAS_PUBLIC = \"${CANVAS_PUBLIC:-https://canvas.exe.xyz}\""
-    [ -n "$TOKEN" ] && envtoml="$envtoml, CANVAS_TOKEN = \"$TOKEN\""
-    cat <<TOML >&2
-Add this to ~/.codex/config.toml:
-
-[mcp_servers.agent-canvas]
-command = "$MCP_BIN"
-env = { $envtoml }
-TOML
-    ;;
-
-  cli)
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$CLI_BIN" "$HOME/.local/bin/canvas-cli"
-    echo "✅ linked canvas-cli -> ~/.local/bin/canvas-cli" >&2
-    if $ON_VM; then
-      echo "   On the VM: no token needed. Try: canvas-cli request 'Sketch the header'" >&2
-    else
-      echo "   Off the VM: set CANVAS_BASE=https://canvas.exe.xyz and CANVAS_TOKEN=<token>." >&2
-    fi
-    ;;
-
-  *)
-    cat >&2 <<USAGE
-usage: ./install {claude-code|codex|claude-desktop|cli}
-
-Detected environment: $([ "$ON_VM" = true ] && echo 'ON the exe.dev VM (localhost, no token)' || echo 'OFF the VM (proxy + bearer token)')
-USAGE
-    exit 1
-    ;;
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) echo "   ⚠ ~/.local/bin isn't on your PATH; add it to run 'canvas-cli' directly." >&2 ;;
 esac
