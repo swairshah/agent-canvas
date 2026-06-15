@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# canvas-cli: request a hand-drawn canvas from a human, block until they send it back.
+#
+# Usage:
+#   canvas-cli request "Sketch the blog header layout"   # creates + waits, downloads result
+#   canvas-cli create  "prompt..."                        # just create, print id+url (no wait)
+#   canvas-cli wait    <id> [out.png]                     # poll until done, download image
+#   canvas-cli status  <id>
+#
+# Env:
+#   CANVAS_BASE   internal base URL the agent polls (default http://localhost:8000)
+#   CANVAS_PUBLIC public URL shown to the human  (default https://canvas.exe.xyz)
+#   CANVAS_POLL   poll interval seconds (default 3)
+set -euo pipefail
+
+BASE="${CANVAS_BASE:-http://localhost:8000}"
+PUBLIC="${CANVAS_PUBLIC:-https://canvas.exe.xyz}"
+POLL="${CANVAS_POLL:-3}"
+
+need() { command -v "$1" >/dev/null || { echo "need $1" >&2; exit 1; }; }
+need curl; need jq
+
+create() {
+  local prompt="$1"
+  curl -fsS -X POST "$BASE/api/canvas" \
+    -H 'Content-Type: application/json' \
+    -d "$(jq -nc --arg p "$prompt" --arg by "${CANVAS_BY:-agent}" '{prompt:$p, by:$by}')"
+}
+
+status() { curl -fsS "$BASE/api/canvas/$1"; }
+
+wait_done() {
+  local id="$1" out="${2:-canvas-$1.png}"
+  echo "⏳ waiting for human to draw (polling every ${POLL}s)…" >&2
+  while :; do
+    local st
+    st=$(status "$id" | jq -r .status)
+    if [ "$st" = "done" ]; then
+      curl -fsS "$BASE/api/canvas/$id/image.png" -o "$out" || true
+      curl -fsS "$BASE/api/canvas/$id/snapshot.json" -o "${out%.png}.snapshot.json" 2>/dev/null || true
+      echo "✅ received. image -> $out" >&2
+      status "$id" | jq '{id,status,text,has_image,has_snapshot}'
+      return 0
+    fi
+    sleep "$POLL"
+  done
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  create)
+    create "${1:?prompt required}" | jq --arg pub "$PUBLIC" '. + {public_url: ($pub + .url)}'
+    ;;
+  request)
+    resp=$(create "${1:?prompt required}")
+    id=$(echo "$resp" | jq -r .id)
+    echo "🎨 Open on your phone: $PUBLIC/c/$id" >&2
+    wait_done "$id" "${2:-canvas-$id.png}"
+    ;;
+  wait)   wait_done "${1:?id required}" "${2:-}" ;;
+  status) status "${1:?id required}" | jq . ;;
+  *) echo "usage: canvas-cli {request|create|wait|status} ..." >&2; exit 1 ;;
+esac

@@ -1,0 +1,14 @@
+[Unit]
+Description=Agent Canvas (TLDraw) server
+After=network.target
+
+[Service]
+Type=simple
+User=exedev
+WorkingDirectory=/home/exedev/canvas
+ExecStart=/home/exedev/canvas/canvas -listen :8000 -data /home/exedev/canvas/data
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

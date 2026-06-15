@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Canvas</title>
+<link rel="stylesheet" href="https://esm.sh/tldraw@3.4.0/tldraw.css" />
+<style>
+  html, body, #root { margin:0; height:100%; width:100%; overflow:hidden; font-family:system-ui,sans-serif; }
+  #bar {
+    position:fixed; top:0; left:0; right:0; z-index:1000;
+    display:flex; align-items:center; gap:10px;
+    padding:8px 12px; background:#111; color:#fff;
+    box-shadow:0 1px 6px rgba(0,0,0,.3);
+  }
+  #prompt { flex:1; font-size:14px; line-height:1.3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #send {
+    background:#2563eb; color:#fff; border:0; border-radius:8px;
+    padding:8px 16px; font-size:15px; font-weight:600; cursor:pointer;
+  }
+  #send:disabled { opacity:.5; }
+  #editor { position:fixed; top:46px; left:0; right:0; bottom:0; }
+  #toast {
+    position:fixed; bottom:16px; left:50%; transform:translateX(-50%);
+    background:#16a34a; color:#fff; padding:10px 18px; border-radius:8px;
+    z-index:2000; display:none; font-size:14px;
+  }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <div id="prompt">Loading…</div>
+    <button id="send" disabled>Send</button>
+  </div>
+  <div id="editor"></div>
+  <div id="toast"></div>
+
+<script type="module">
+import React from 'https://esm.sh/react@18.3.1';
+import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client';
+import { Tldraw, getSnapshot, exportToBlob } from 'https://esm.sh/tldraw@3.4.0?deps=react@18.3.1,react-dom@18.3.1';
+
+const sessionId = location.pathname.split('/').pop();
+let editor = null;
+
+const promptEl = document.getElementById('prompt');
+const sendBtn = document.getElementById('send');
+const toast = document.getElementById('toast');
+
+function showToast(msg, color) {
+  toast.textContent = msg;
+  toast.style.background = color || '#16a34a';
+  toast.style.display = 'block';
+}
+
+// Load session meta for the prompt.
+fetch(`/api/canvas/${sessionId}`).then(r => r.json()).then(s => {
+  promptEl.textContent = s.prompt || 'Draw something';
+  document.title = 'Canvas · ' + (s.prompt || '').slice(0, 30);
+  if (s.status === 'done') {
+    showToast('Already submitted ✓');
+  }
+}).catch(() => { promptEl.textContent = 'Canvas'; });
+
+function App() {
+  return React.createElement(Tldraw, {
+    onMount: (ed) => {
+      editor = ed;
+      window.tldrawEditor = ed; // for automation/debugging
+      sendBtn.disabled = false;
+    }
+  });
+}
+createRoot(document.getElementById('editor')).render(React.createElement(App));
+
+sendBtn.addEventListener('click', async () => {
+  if (!editor) return;
+  sendBtn.disabled = true;
+  sendBtn.textContent = 'Sending…';
+  try {
+    const shapeIds = editor.getCurrentPageShapeIds();
+    let imageDataUrl = '';
+    if (shapeIds.size > 0) {
+      const blob = await exportToBlob({
+        editor,
+        ids: [...shapeIds],
+        format: 'png',
+        opts: { background: true, padding: 16, scale: 2 },
+      });
+      imageDataUrl = await new Promise((res) => {
+        const fr = new FileReader();
+        fr.onload = () => res(fr.result);
+        fr.readAsDataURL(blob);
+      });
+    }
+    const { document: doc } = getSnapshot(editor.store);
+    const resp = await fetch(`/api/canvas/${sessionId}/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: imageDataUrl, snapshot: doc }),
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    showToast('Sent back to agent ✓');
+    sendBtn.textContent = 'Sent ✓';
+  } catch (e) {
+    showToast('Failed: ' + e.message, '#dc2626');
+    sendBtn.disabled = false;
+    sendBtn.textContent = 'Send';
+  }
+});
+</script>
+</body>
+</html>

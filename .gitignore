@@ -1,0 +1,5 @@
+/canvas
+/data/
+/server.log
+canvas-*.png
+canvas-*.snapshot.json

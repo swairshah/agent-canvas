@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Canvas · exe.dev</title>
+<style>
+  body { font-family:system-ui,sans-serif; max-width:760px; margin:40px auto; padding:0 16px; color:#111; }
+  h1 { font-size:22px; }
+  code { background:#f3f4f6; padding:2px 6px; border-radius:4px; }
+  .card { border:1px solid #e5e7eb; border-radius:10px; padding:14px; margin:10px 0; }
+  .row { display:flex; justify-content:space-between; gap:10px; align-items:center; }
+  .badge { font-size:12px; padding:2px 8px; border-radius:999px; }
+  .pending { background:#fef3c7; color:#92400e; }
+  .done { background:#dcfce7; color:#166534; }
+  a.btn { text-decoration:none; color:#2563eb; }
+  .muted { color:#6b7280; font-size:13px; }
+  img.thumb { max-height:80px; border:1px solid #e5e7eb; border-radius:6px; }
+</style>
+</head>
+<body>
+  <h1>🎨 Agent Canvas</h1>
+  <p class="muted">Coding agents create a canvas request; you draw on your phone and send it back.</p>
+  <div class="card">
+    <form id="f" class="row">
+      <input id="p" placeholder="Prompt (e.g. sketch the homepage layout)" style="flex:1;padding:8px;border:1px solid #d1d5db;border-radius:6px" />
+      <button>Create</button>
+    </form>
+  </div>
+  <h2 style="font-size:16px">Sessions</h2>
+  <div id="list"></div>
+<script>
+async function load() {
+  const r = await fetch('/api/canvas');
+  const arr = await r.json();
+  arr.sort((a,b)=> new Date(b.created_at) - new Date(a.created_at));
+  document.getElementById('list').innerHTML = arr.map(s => `
+    <div class="card">
+      <div class="row">
+        <div><strong>${escape(s.prompt)}</strong><br><span class="muted">${s.id}</span></div>
+        <span class="badge ${s.status}">${s.status}</span>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <a class="btn" href="/c/${s.id}">Open canvas →</a>
+        ${s.has_image ? `<img class="thumb" src="/api/canvas/${s.id}/image.png">` : ''}
+      </div>
+    </div>`).join('') || '<p class="muted">No sessions yet.</p>';
+}
+function escape(x){const d=document.createElement('div');d.textContent=x||'';return d.innerHTML;}
+document.getElementById('f').onsubmit = async (e) => {
+  e.preventDefault();
+  const prompt = document.getElementById('p').value;
+  await fetch('/api/canvas', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt})});
+  document.getElementById('p').value='';
+  load();
+};
+load();
+setInterval(load, 3000);
+</script>
+</body>
+</html>
