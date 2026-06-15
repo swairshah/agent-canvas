@@ -40,16 +40,17 @@ type Session struct {
 }
 
 type Store struct {
-	mu  sync.RWMutex
-	dir string
-	m   map[string]*Session
+	mu   sync.RWMutex
+	dir  string
+	m    map[string]*Session
+	subs map[string][]chan struct{} // session id -> long-poll waiters, closed on Submit
 }
 
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, m: map[string]*Session{}}
+	s := &Store{dir: dir, m: map[string]*Session{}, subs: map[string][]chan struct{}{}}
 	// Load existing sessions from disk.
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
@@ -117,6 +118,42 @@ func (s *Store) List() []*Session {
 
 var errNotFound = errors.New("session not found")
 
+// Subscribe registers a waiter for a session. The returned channel is closed
+// when the session is submitted; call cancel when done waiting.
+func (s *Store) Subscribe(id string) (<-chan struct{}, func()) {
+	ch := make(chan struct{})
+	s.mu.Lock()
+	s.subs[id] = append(s.subs[id], ch)
+	s.mu.Unlock()
+	cancel := func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		w := s.subs[id]
+		for i, c := range w {
+			if c == ch {
+				s.subs[id] = append(w[:i], w[i+1:]...)
+				break
+			}
+		}
+		if len(s.subs[id]) == 0 {
+			delete(s.subs, id)
+		}
+	}
+	return ch, cancel
+}
+
+// notify wakes all waiters for a session (called after a submit). Channels are
+// removed before closing, so a concurrent cancel never double-closes.
+func (s *Store) notify(id string) {
+	s.mu.Lock()
+	w := s.subs[id]
+	delete(s.subs, id)
+	s.mu.Unlock()
+	for _, ch := range w {
+		close(ch)
+	}
+}
+
 // Submit records a human's drawing result and flips status to done.
 func (s *Store) Submit(id, text string, png, snap []byte) error {
 	s.mu.Lock()
@@ -140,7 +177,25 @@ func (s *Store) Submit(id, text string, png, snap []byte) error {
 	sess.Text = text
 	sess.Status = StatusDone
 	sess.UpdatedAt = time.Now().UTC()
-	return s.save(sess)
+	if err := s.save(sess); err != nil {
+		return err
+	}
+	s.notify(id) // wake any long-poll waiters
+	return nil
+}
+
+// Delete removes a session from the store and deletes its files. Long-poll
+// waiters are woken so they don't block on a session that no longer exists.
+func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	_, ok := s.m[id]
+	delete(s.m, id)
+	s.mu.Unlock()
+	if !ok {
+		return errNotFound
+	}
+	s.notify(id)
+	return os.RemoveAll(s.path(id))
 }
 
 func randID() string {
@@ -211,6 +266,61 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 403, map[string]string{"error": "forbidden"})
 		return
 	}
+	writeJSON(w, 200, sess)
+}
+
+// DELETE /api/canvas/{id} -> remove a session (and its files)
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess, ok := s.store.Get(id)
+	if !ok {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	if !canAccess(sess, r) {
+		writeJSON(w, 403, map[string]string{"error": "forbidden"})
+		return
+	}
+	if err := s.store.Delete(id); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "deleted"})
+}
+
+// GET /api/canvas/{id}/wait -> long-poll: blocks until the session is submitted
+// or a short server-side ceiling elapses, then returns session meta. The client
+// reconnects while still pending. The ceiling keeps each request under proxy
+// idle timeouts; delivery on submit is immediate.
+func (s *Server) handleWait(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sess, ok := s.store.Get(id)
+	if !ok {
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+		return
+	}
+	if !canAccess(sess, r) {
+		writeJSON(w, 403, map[string]string{"error": "forbidden"})
+		return
+	}
+	if sess.Status == StatusDone {
+		writeJSON(w, 200, sess)
+		return
+	}
+	ch, cancel := s.store.Subscribe(id)
+	defer cancel()
+	// Re-check: a submit may have landed between Get and Subscribe.
+	if sess, _ = s.store.Get(id); sess.Status == StatusDone {
+		writeJSON(w, 200, sess)
+		return
+	}
+	select {
+	case <-ch: // submitted
+	case <-time.After(25 * time.Second): // ceiling: client will reconnect
+	case <-r.Context().Done(): // client hung up
+		return
+	}
+	sess, _ = s.store.Get(id)
 	writeJSON(w, 200, sess)
 }
 
@@ -341,6 +451,8 @@ func main() {
 	mux.HandleFunc("POST /api/canvas", s.handleCreate)
 	mux.HandleFunc("GET /api/canvas", s.handleList)
 	mux.HandleFunc("GET /api/canvas/{id}", s.handleGet)
+	mux.HandleFunc("DELETE /api/canvas/{id}", s.handleDelete)
+	mux.HandleFunc("GET /api/canvas/{id}/wait", s.handleWait)
 	mux.HandleFunc("POST /api/canvas/{id}/submit", s.handleSubmit)
 	mux.HandleFunc("GET /api/canvas/{id}/image.png", s.handleImage)
 	mux.HandleFunc("GET /api/canvas/{id}/snapshot.json", s.handleSnapshot)
