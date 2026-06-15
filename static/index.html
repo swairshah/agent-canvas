@@ -3,59 +3,303 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Canvas · exe.dev</title>
+<title>agent canvas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400..600;1,6..72,400..600&family=JetBrains+Mono:wght@400;500&display=swap" />
 <style>
-  body { font-family:system-ui,sans-serif; max-width:760px; margin:40px auto; padding:0 16px; color:#111; }
-  h1 { font-size:22px; }
-  code { background:#f3f4f6; padding:2px 6px; border-radius:4px; }
-  .card { border:1px solid #e5e7eb; border-radius:10px; padding:14px; margin:10px 0; }
-  .row { display:flex; justify-content:space-between; gap:10px; align-items:center; }
-  .badge { font-size:12px; padding:2px 8px; border-radius:999px; }
-  .pending { background:#fef3c7; color:#92400e; }
-  .done { background:#dcfce7; color:#166534; }
-  a.btn { text-decoration:none; color:#2563eb; }
-  .muted { color:#6b7280; font-size:13px; }
-  img.thumb { max-height:80px; border:1px solid #e5e7eb; border-radius:6px; }
+  /* Same warm-dark palette as canvas.html, light variant on [data-theme="light"]. */
+  :root {
+    color-scheme: dark;
+    --bg: #121110;
+    --bg-secondary: #1e1c19;
+    --surface: #171512;
+    --border: #3a3630;
+    --text: #d8d3ca;
+    --text-bright: #ecebe5;
+    --text-muted: #9d988e;
+    --accent: #e4916a;
+    --green: #75c596;
+    --red: #ef7568;
+    --amber: #e4b86a;
+    --shadow: rgba(0, 0, 0, 0.34);
+    --font-serif: "Newsreader", "Reader", ui-serif, Georgia, serif;
+    --font-code: "JetBrains Mono", "Google Sans Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  [data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --bg-secondary: #f7f7f5;
+    --surface: #ffffff;
+    --border: #deded8;
+    --text: #2a2a2a;
+    --text-bright: #111111;
+    --text-muted: #68645d;
+    --accent: #b43a1a;
+    --green: #317456;
+    --red: #b43a1a;
+    --amber: #9a6a12;
+    --shadow: rgba(17, 17, 17, 0.08);
+  }
+  *, *::before, *::after { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    position: relative;
+    background:
+      radial-gradient(circle at 14% 6%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 26rem),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--font-serif);
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+    max-width: 720px; margin: 0 auto; padding: max(20px, env(safe-area-inset-top)) 18px 64px;
+  }
+  header { display: flex; align-items: center; gap: 10px; padding: 6px 0 4px; }
+  h1 {
+    font-family: var(--font-serif); font-style: italic; font-weight: 600;
+    font-size: 30px; letter-spacing: .2px; margin: 0; color: var(--text-bright); flex: 0 0 auto;
+  }
+  .status { margin-left: auto; display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--font-code); font-size: 13px; color: var(--text-muted); }
+  .dot { width: 9px; height: 9px; border-radius: 999px; background: var(--text-muted); box-shadow: 0 0 0 0 transparent; }
+  .dot.ok { background: var(--green); box-shadow: 0 0 10px color-mix(in srgb, var(--green) 70%, transparent); }
+  .dot.off { background: var(--red); }
+  .iconBtn {
+    appearance: none; border: 1px solid var(--border); background: transparent; color: var(--text-muted);
+    width: 34px; height: 34px; border-radius: 999px; cursor: pointer; font-size: 15px;
+    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    transition: color .16s ease, border-color .16s ease;
+  }
+  .iconBtn:hover, .iconBtn.active { color: var(--accent); border-color: var(--accent); }
+  .rule { height: 1px; background: var(--border); margin: 12px 0 18px; }
+
+  /* settings popover */
+  #settings {
+    position: absolute; top: 58px; right: 18px; z-index: 60; width: 248px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: 0 16px 44px var(--shadow); padding: 10px; display: none;
+  }
+  #settings.open { display: block; }
+  #settings .grp { font-family: var(--font-code); font-size: 9.5px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--text-muted); margin: 6px 8px 4px; }
+  #settings button.act {
+    appearance: none; width: 100%; text-align: left; background: transparent; border: 0; color: var(--text);
+    font-family: var(--font-code); font-size: 12.5px; padding: 9px 10px; border-radius: 9px; cursor: pointer;
+    transition: background .14s ease, color .14s ease;
+  }
+  #settings button.act:hover { background: var(--bg-secondary); color: var(--accent); }
+  #settings button.act.danger:hover { color: var(--red); }
+  #settings .item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; }
+  #settings .item span { font-family: var(--font-code); font-size: 12.5px; color: var(--text); }
+  #settings .sep2 { height: 1px; background: var(--border); margin: 8px 4px; }
+  .switch { position: relative; width: 38px; height: 22px; flex: 0 0 auto; }
+  .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .switch .track { position: absolute; inset: 0; background: var(--border); border-radius: 999px; cursor: pointer; transition: background .16s ease; }
+  .switch .track::before { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px;
+    background: var(--text-muted); border-radius: 50%; transition: transform .16s ease, background .16s ease; }
+  .switch input:checked + .track { background: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+  .switch input:checked + .track::before { transform: translateX(16px); background: var(--accent); }
+
+  form.create { display: flex; gap: 8px; margin-bottom: 22px; }
+  input#p {
+    flex: 1; min-width: 0; padding: 11px 14px; color: var(--text);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    font-family: var(--font-code); font-size: 13px;
+  }
+  input#p::placeholder { color: var(--text-muted); }
+  input#p:focus { outline: none; border-color: var(--accent); }
+  button.send {
+    appearance: none; border: 1px solid var(--accent); border-radius: 12px; padding: 0 18px;
+    background: var(--accent); color: var(--bg); font-family: var(--font-code); font-size: 13px;
+    font-weight: 600; cursor: pointer; transition: background .16s ease, color .16s ease;
+  }
+  button.send:hover { background: transparent; color: var(--accent); }
+  .empty { text-align: center; color: var(--text-muted); padding: 48px 0; }
+  .empty strong { display: block; font-size: 20px; color: var(--text-bright); margin-bottom: 8px; }
+  .empty code { font-family: var(--font-code); color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent); padding: 2px 7px; border-radius: 6px; }
+  .card {
+    display: flex; align-items: center; gap: 12px;
+    border: 1px solid var(--border); border-radius: 14px; padding: 16px;
+    background: color-mix(in srgb, var(--surface) 80%, transparent);
+    box-shadow: 0 8px 22px var(--shadow); margin-bottom: 12px;
+    transition: border-color .16s ease;
+  }
+  .card:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
+  .card .meta { flex: 1; min-width: 0; }
+  .card .prompt { color: var(--text-bright); font-size: 17px; font-weight: 600; line-height: 1.3;
+    overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .card .sub { font-family: var(--font-code); font-size: 11.5px; color: var(--text-muted); margin-top: 5px; }
+  .card a.open {
+    flex: 0 0 auto; text-decoration: none; font-family: var(--font-code); font-size: 13px;
+    color: var(--text-bright); border: 1px solid var(--border); border-radius: 999px; padding: 8px 18px;
+    transition: border-color .16s ease, color .16s ease;
+  }
+  .card a.open:hover { border-color: var(--accent); color: var(--accent); }
+  .card button.del {
+    flex: 0 0 auto; appearance: none; border: 1px solid var(--border); background: transparent;
+    color: var(--text-muted); width: 30px; height: 30px; border-radius: 999px; cursor: pointer;
+    font-size: 16px; line-height: 1; transition: color .14s ease, border-color .14s ease;
+  }
+  .card button.del:hover { color: var(--red); border-color: var(--red); }
+  .badge { font-family: var(--font-code); font-size: 11px; padding: 3px 9px; border-radius: 999px; flex: 0 0 auto; }
+  .badge.pending { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); }
+  .badge.done { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
+  img.thumb { flex: 0 0 auto; width: 56px; height: 56px; object-fit: cover;
+    border: 1px solid var(--border); border-radius: 10px; }
+  footer { text-align: center; font-family: var(--font-code); font-size: 12px;
+    color: var(--text-muted); margin-top: 36px; line-height: 1.7; }
+  footer code { color: var(--accent); }
 </style>
 </head>
 <body>
-  <h1>🎨 Agent Canvas</h1>
-  <p class="muted">Coding agents create a canvas request; you draw on your phone and send it back.</p>
-  <div class="card">
-    <form id="f" class="row">
-      <input id="p" placeholder="Prompt (e.g. sketch the homepage layout)" style="flex:1;padding:8px;border:1px solid #d1d5db;border-radius:6px" />
-      <button>Create</button>
-    </form>
+  <header>
+    <h1>agent canvas</h1>
+    <span class="status"><span id="dot" class="dot"></span><span id="statusText">connecting…</span></span>
+    <button id="theme" class="iconBtn" title="Toggle light / dark">◐</button>
+    <button id="gear" class="iconBtn" title="Settings">⚙</button>
+  </header>
+
+  <div id="settings">
+    <div class="grp">manage</div>
+    <button class="act" id="clearDone">Clear completed</button>
+    <button class="act" id="clearPending">Clear pending</button>
+    <button class="act danger" id="clearAll">Clear all</button>
+    <div class="sep2"></div>
+    <div class="grp">display</div>
+    <div class="item"><span>Hide completed</span>
+      <label class="switch"><input type="checkbox" id="hideDone"><span class="track"></span></label></div>
+    <div class="item"><span>Auto-refresh</span>
+      <label class="switch"><input type="checkbox" id="autoRefresh"><span class="track"></span></label></div>
   </div>
-  <h2 style="font-size:16px">Sessions</h2>
+
+  <div class="rule"></div>
+
+  <form id="f" class="create">
+    <input id="p" placeholder="prompt — e.g. sketch the homepage layout" />
+    <button class="send">create</button>
+  </form>
+
   <div id="list"></div>
+
+  <footer>
+    coding agents create a request; you draw on your phone and send it back.<br>
+    run <code>canvas-cli request "…"</code> in your agent, then open this page.
+  </footer>
+
 <script>
-async function load() {
-  const r = await fetch('/api/canvas');
-  const arr = await r.json();
-  arr.sort((a,b)=> new Date(b.created_at) - new Date(a.created_at));
-  document.getElementById('list').innerHTML = arr.map(s => `
-    <div class="card">
-      <div class="row">
-        <div><strong>${escape(s.prompt)}</strong><br><span class="muted">${s.id}</span></div>
-        <span class="badge ${s.status}">${s.status}</span>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <a class="btn" href="/c/${s.id}">Open canvas →</a>
+  // ---- settings (persisted) ---------------------------------------------
+  const S = {
+    theme:       localStorage.getItem('canvas-theme') || 'dark',
+    hideDone:    localStorage.getItem('canvas-hide-done') === '1',
+    autorefresh: localStorage.getItem('canvas-autorefresh') !== '0', // default on
+  };
+
+  const themeBtn = document.getElementById('theme');
+  function applyTheme(t) { S.theme = t; document.documentElement.setAttribute('data-theme', t); localStorage.setItem('canvas-theme', t); }
+  applyTheme(S.theme);
+  themeBtn.onclick = () => applyTheme(S.theme === 'dark' ? 'light' : 'dark');
+
+  // ---- settings popover --------------------------------------------------
+  const gear = document.getElementById('gear');
+  const panel = document.getElementById('settings');
+  gear.onclick = (e) => { e.stopPropagation(); panel.classList.toggle('open'); gear.classList.toggle('active'); };
+  document.addEventListener('click', (e) => {
+    if (!panel.contains(e.target) && e.target !== gear) { panel.classList.remove('open'); gear.classList.remove('active'); }
+  });
+
+  const hideDoneEl = document.getElementById('hideDone');
+  const autoEl = document.getElementById('autoRefresh');
+  hideDoneEl.checked = S.hideDone;
+  autoEl.checked = S.autorefresh;
+  hideDoneEl.onchange = () => { S.hideDone = hideDoneEl.checked; localStorage.setItem('canvas-hide-done', S.hideDone ? '1' : '0'); render(); };
+  autoEl.onchange = () => { S.autorefresh = autoEl.checked; localStorage.setItem('canvas-autorefresh', S.autorefresh ? '1' : '0'); applyAutoRefresh(); };
+
+  // ---- delete actions ----------------------------------------------------
+  async function delOne(id) {
+    try { await fetch('/api/canvas/' + id, { method: 'DELETE' }); } catch (e) {}
+    load();
+  }
+  window.delOne = delOne;
+  async function clearBy(kind) {
+    const targets = current.filter(s => kind === 'all' ? true : s.status === kind);
+    if (kind === 'all' && targets.length && !confirm('Delete all ' + targets.length + ' request(s)?')) return;
+    await Promise.all(targets.map(s => fetch('/api/canvas/' + s.id, { method: 'DELETE' }).catch(() => {})));
+    panel.classList.remove('open'); gear.classList.remove('active');
+    load();
+  }
+  document.getElementById('clearDone').onclick = () => clearBy('done');
+  document.getElementById('clearPending').onclick = () => clearBy('pending');
+  document.getElementById('clearAll').onclick = () => clearBy('all');
+
+  // ---- helpers -----------------------------------------------------------
+  function esc(x){ const d = document.createElement('div'); d.textContent = x || ''; return d.innerHTML; }
+  function ago(iso){
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 60) return Math.floor(s) + 's ago';
+    if (s < 3600) return Math.floor(s/60) + 'm ago';
+    if (s < 86400) return Math.floor(s/3600) + 'h ago';
+    return Math.floor(s/86400) + 'd ago';
+  }
+
+  const dot = document.getElementById('dot');
+  const statusText = document.getElementById('statusText');
+  let current = [];
+
+  function render() {
+    let arr = current.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    const pending = arr.filter(s => s.status === 'pending').length;
+    dot.className = 'dot ok';
+    statusText.textContent = pending ? pending + ' pending' : 'connected';
+    if (S.hideDone) arr = arr.filter(s => s.status !== 'done');
+
+    document.getElementById('list').innerHTML = arr.length ? arr.map(s => `
+      <div class="card">
+        <div class="meta">
+          <div class="prompt">${esc(s.prompt)}</div>
+          <div class="sub">${s.id.replace('sess_', '#')} · ${ago(s.created_at)}</div>
+        </div>
         ${s.has_image ? `<img class="thumb" src="/api/canvas/${s.id}/image.png">` : ''}
-      </div>
-    </div>`).join('') || '<p class="muted">No sessions yet.</p>';
-}
-function escape(x){const d=document.createElement('div');d.textContent=x||'';return d.innerHTML;}
-document.getElementById('f').onsubmit = async (e) => {
-  e.preventDefault();
-  const prompt = document.getElementById('p').value;
-  await fetch('/api/canvas', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt})});
-  document.getElementById('p').value='';
+        <span class="badge ${s.status}">${s.status}</span>
+        <a class="open" href="/c/${s.id}">open</a>
+        <button class="del" title="Delete" onclick="delOne('${s.id}')">×</button>
+      </div>`).join('') : `
+      <div class="empty">
+        <strong>nothing here yet</strong>
+        run <code>canvas-cli request "…"</code> in your agent, then open this page.
+      </div>`;
+  }
+
+  async function load() {
+    try {
+      const r = await fetch('/api/canvas');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      current = await r.json();
+    } catch (e) {
+      dot.className = 'dot off'; statusText.textContent = 'offline';
+      return;
+    }
+    render();
+  }
+
+  // ---- auto-refresh ------------------------------------------------------
+  let timer = null;
+  function applyAutoRefresh() {
+    clearInterval(timer); timer = null;
+    if (S.autorefresh) timer = setInterval(load, 3000);
+  }
+
+  document.getElementById('f').onsubmit = async (e) => {
+    e.preventDefault();
+    const p = document.getElementById('p');
+    const prompt = p.value.trim();
+    if (!prompt) return;
+    await fetch('/api/canvas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
+    p.value = '';
+    load();
+  };
+
   load();
-};
-load();
-setInterval(load, 3000);
+  applyAutoRefresh();
 </script>
 </body>
 </html>
